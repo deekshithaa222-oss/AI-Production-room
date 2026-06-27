@@ -86,14 +86,14 @@ def get_investigation_graph():
     graph.add_node("planner", planner_node)
     graph.add_node("agent_runner", agent_runner_node)
     graph.add_node("evidence_collector", evidence_collector_node)
-    graph.add_node("root_cause_scorer", root_cause_scorer_node)
+    graph.add_node("lead_assessor", lead_assessor_node)
     graph.add_node("report_generator", report_generator_node)
 
     graph.add_edge(START, "planner")
     graph.add_edge("planner", "agent_runner")
     graph.add_edge("agent_runner", "evidence_collector")
-    graph.add_edge("evidence_collector", "root_cause_scorer")
-    graph.add_edge("root_cause_scorer", "report_generator")
+    graph.add_edge("evidence_collector", "lead_assessor")
+    graph.add_edge("lead_assessor", "report_generator")
     graph.add_edge("report_generator", END)
 
     compiled_graph = graph.compile()
@@ -149,7 +149,7 @@ def evidence_collector_node(state: InvestigationGraphState) -> InvestigationGrap
     return {"evidence": investigation.evidence}
 
 
-def root_cause_scorer_node(state: InvestigationGraphState) -> InvestigationGraphState:
+def lead_assessor_node(state: InvestigationGraphState) -> InvestigationGraphState:
     investigation = investigations[state["investigation_id"]]
     investigation.scores = score_root_causes(investigation.evidence)
     investigation.progress = 92
@@ -928,6 +928,13 @@ def collect_evidence(agents: List[AgentResult]) -> Dict[str, Any]:
 
 
 def score_root_causes(evidence: Dict[str, Any]) -> List[RootCauseScore]:
+    leads: List[RootCauseScore] = []
+
+    def add_lead(title: str, reasons: List[str]) -> None:
+        clean_reasons = [reason for reason in reasons if reason]
+        if clean_reasons:
+            leads.append(RootCauseScore(hypothesis=title, score=len(clean_reasons), reasons=clean_reasons))
+
     deployment = evidence.get("deployment", {})
     metrics = evidence.get("metrics", {})
     logs = evidence.get("logs", {})
@@ -939,151 +946,135 @@ def score_root_causes(evidence: Dict[str, Any]) -> List[RootCauseScore]:
     security = evidence.get("security", {})
     kubernetes = evidence.get("kubernetes", {})
     cloud = evidence.get("cloud", {})
+    devsecops = evidence.get("devsecops", {})
     serverless = evidence.get("serverless", {})
 
-    db_score = 0
-    db_reasons: List[str] = []
-
-    saturation = database.get("pool_saturation_pct")
-    if saturation is not None and saturation >= 90:
-        db_score += 40
-        db_reasons.append(f"Estimated database pool saturation is {saturation}%.")
-    if logs.get("connection_timeout_logs"):
-        db_score += 25
-        db_reasons.append(f"Logs contain {logs.get('connection_timeout_count', 0)} connection-timeout matches.")
-    if deployment.get("db_pool_size_decreased"):
-        db_score += 20
-        db_reasons.append(f"DB_POOL_SIZE decreased from {deployment.get('db_pool_size_before')} to {deployment.get('db_pool_size_after')}.")
-    if metrics.get("latency_spike") and metrics.get("error_rate_spike"):
-        db_score += 10
-        db_reasons.append("Prometheus shows both latency and error-rate symptoms.")
-    if kubernetes.get("pods_ready") and not kubernetes.get("restart_spike"):
-        db_score += 5
-        db_reasons.append("Kubernetes pods are ready with no restart spike.")
-
-    app_score = 0
-    app_reasons: List[str] = []
-    if logs.get("stack_trace_present"):
-        app_score += 15
-        app_reasons.append(f"Logs contain {logs.get('error_count', 0)} error or stack-trace markers.")
-    if not app_reasons:
-        app_reasons.append("No source-backed application-bug evidence was collected.")
-
-    network_score = 0
-    network_reasons = ["No source-backed network evidence was collected."]
-    if network.get("tcp_connect_ok") is False:
-        network_score += 35
-        network_reasons = [f"TCP connection to {network.get('source', {}).get('host')}:{network.get('source', {}).get('port')} failed."]
-    if metrics.get("error_rate_spike") and not logs.get("connection_timeout_logs"):
-        network_score += 5
-        if network_reasons == ["No source-backed network evidence was collected."]:
-            network_reasons = []
-        network_reasons.append("Error rate is elevated, but logs did not identify database connection timeouts.")
-
-    kube_score = 0
-    kube_reasons: List[str] = []
-    if kubernetes.get("crash_loop"):
-        kube_score += 35
-        kube_reasons.append("At least one pod is in CrashLoopBackOff.")
-    if kubernetes.get("oom_killed"):
-        kube_score += 30
-        kube_reasons.append("At least one pod has an OOMKilled termination.")
-    if kubernetes.get("restart_spike"):
-        kube_score += 15
-        kube_reasons.append("Pod restart count is above zero.")
-    if not kube_reasons:
-        kube_reasons.append("No source-backed Kubernetes failure evidence was collected.")
-
-    dns_score = 0
-    dns_reasons: List[str] = []
-    if dns.get("forward_lookup_ok") is False:
-        dns_score += 45
-        dns_reasons.append("DNS forward lookup failed for the target hostname.")
-    if dns.get("forward_lookup_ok") and not dns.get("reverse_lookup_complete"):
-        dns_score += 10
-        dns_reasons.append("One or more reverse DNS lookups did not return hostnames.")
-    if not dns_reasons:
-        dns_reasons.append("No source-backed DNS failure evidence was collected.")
-
-    redis_score = 0
-    redis_reasons: List[str] = []
-    if redis.get("ping_ok") is False:
-        redis_score += 35
-        redis_reasons.append("Redis PING did not return PONG.")
-    miss_rate = redis.get("cache_miss_rate_pct")
-    if miss_rate is not None and miss_rate >= 50:
-        redis_score += 20
-        redis_reasons.append(f"Redis cache miss rate is {miss_rate}%.")
-    if not redis_reasons:
-        redis_reasons.append("No source-backed Redis or NoSQL failure evidence was collected.")
-
-    storage_score = 0
-    storage_reasons: List[str] = []
-    if storage.get("disk_used_pct") is not None and storage["disk_used_pct"] >= 90:
-        storage_score += 35
-        storage_reasons.append(f"Filesystem usage is {storage['disk_used_pct']}%.")
-    if storage.get("pvc_pending", 0) > 0:
-        storage_score += 30
-        storage_reasons.append(f"{storage.get('pvc_pending')} Kubernetes PVC(s) are not Bound.")
-    if not storage_reasons:
-        storage_reasons.append("No source-backed storage failure evidence was collected.")
-
-    security_score = 0
-    security_reasons: List[str] = []
-    if security.get("tls_cert_present") is False and security.get("tls_error"):
-        security_score += 20
-        security_reasons.append("TLS certificate check failed.")
-    if security.get("tls_days_remaining") is not None and security["tls_days_remaining"] <= 14:
-        security_score += 30
-        security_reasons.append(f"TLS certificate expires in {security['tls_days_remaining']} day(s).")
-    if security.get("rbac_can_get_pods") is False:
-        security_score += 15
-        security_reasons.append("Kubernetes RBAC cannot read pods in the target namespace.")
-    if not security_reasons:
-        security_reasons.append("No source-backed security failure evidence was collected.")
-
-    cloud_score = 0
-    cloud_reasons: List[str] = []
-    if cloud.get("aws_sts_ok") is False:
-        cloud_score += 10
-        cloud_reasons.append("AWS STS identity check failed.")
-    if not cloud_reasons:
-        cloud_reasons.append("No source-backed cloud control-plane failure evidence was collected.")
-
-    serverless_score = 0
-    serverless_reasons: List[str] = []
-    if serverless.get("lambda_config_ok") is False:
-        serverless_score += 10
-        serverless_reasons.append("Lambda function configuration check failed.")
-    if not serverless_reasons:
-        serverless_reasons.append("No source-backed serverless failure evidence was collected.")
-
-    return sorted(
+    add_lead(
+        "Deployment/configuration change needs review",
         [
-            RootCauseScore(hypothesis="Database connection pool exhaustion", score=db_score, reasons=db_reasons or ["No source-backed database-pool evidence was collected."]),
-            RootCauseScore(hypothesis="Redis or NoSQL cache issue", score=redis_score, reasons=redis_reasons),
-            RootCauseScore(hypothesis="DNS resolution issue", score=dns_score, reasons=dns_reasons),
-            RootCauseScore(hypothesis="Application bug", score=app_score, reasons=app_reasons),
-            RootCauseScore(hypothesis="Network issue", score=network_score, reasons=network_reasons),
-            RootCauseScore(hypothesis="Storage capacity or mount issue", score=storage_score, reasons=storage_reasons),
-            RootCauseScore(hypothesis="Security, certificate, or RBAC issue", score=security_score, reasons=security_reasons),
-            RootCauseScore(hypothesis="Kubernetes capacity issue", score=kube_score, reasons=kube_reasons),
-            RootCauseScore(hypothesis="Cloud control-plane or account issue", score=cloud_score, reasons=cloud_reasons),
-            RootCauseScore(hypothesis="Serverless runtime or function issue", score=serverless_score, reasons=serverless_reasons),
+            f"DB_POOL_SIZE changed from {deployment.get('db_pool_size_before')} to {deployment.get('db_pool_size_after')}."
+            if deployment.get("db_pool_size_changed")
+            else "",
+            "DB_POOL_SIZE decreased in the configured deployment files." if deployment.get("db_pool_size_decreased") else "",
         ],
-        key=lambda item: item.score,
-        reverse=True,
     )
+    add_lead(
+        "Application logs need review",
+        [
+            f"Logs contain {logs.get('connection_timeout_count', 0)} connection-timeout matches." if logs.get("connection_timeout_logs") else "",
+            f"Logs contain {logs.get('error_count', 0)} error or stack-trace markers." if logs.get("stack_trace_present") else "",
+        ],
+    )
+    add_lead(
+        "Metrics anomaly needs review",
+        [
+            f"Prometheus p95 latency query returned {round(metrics.get('p95_latency_ms'), 2)} ms." if metrics.get("p95_latency_ms") is not None else "",
+            f"Prometheus error-rate query returned {round(metrics.get('error_rate_pct'), 2)}%." if metrics.get("error_rate_pct") is not None else "",
+            f"Prometheus CPU query returned {round(metrics.get('cpu_usage_pct'), 2)}%." if metrics.get("cpu_usage_pct") is not None else "",
+        ],
+    )
+    add_lead(
+        "PostgreSQL activity needs review",
+        [
+            f"Active PostgreSQL connections: {database.get('active_connections')}." if database.get("active_connections") is not None else "",
+            f"Sessions with wait events: {database.get('waiting_queries')}." if database.get("waiting_queries") is not None else "",
+            f"Estimated pool saturation: {database.get('pool_saturation_pct')}%." if database.get("pool_saturation_pct") is not None else "",
+            f"Total database deadlocks: {database.get('deadlocks')}." if database.get("deadlocks") is not None else "",
+        ],
+    )
+    add_lead(
+        "Redis/cache behavior needs review",
+        [
+            "Redis PING did not return PONG." if redis.get("ping_ok") is False else "",
+            f"Redis connected clients: {redis.get('connected_clients')}." if redis.get("connected_clients") is not None else "",
+            f"Redis cache miss rate: {redis.get('cache_miss_rate_pct')}%." if redis.get("cache_miss_rate_pct") is not None else "",
+        ],
+    )
+    add_lead(
+        "DNS resolution needs review",
+        [
+            "DNS forward lookup failed for the target hostname." if dns.get("forward_lookup_ok") is False else "",
+            f"DNS forward lookup returned {len(dns.get('addresses', []))} address(es)." if dns.get("forward_lookup_ok") else "",
+            "One or more reverse DNS lookups did not return hostnames." if dns.get("forward_lookup_ok") and not dns.get("reverse_lookup_complete") else "",
+        ],
+    )
+    add_lead(
+        "Network reachability needs review",
+        [
+            f"TCP connection to {network.get('source', {}).get('host')}:{network.get('source', {}).get('port')} failed." if network.get("tcp_connect_ok") is False else "",
+            f"TCP connection to {network.get('source', {}).get('host')}:{network.get('source', {}).get('port')} succeeded." if network.get("tcp_connect_ok") is True else "",
+            "UDP probe failed to send." if network.get("udp_probe_ok") is False else "",
+        ],
+    )
+    add_lead(
+        "Storage state needs review",
+        [
+            f"Filesystem usage is {storage.get('disk_used_pct')}%." if storage.get("disk_used_pct") is not None else "",
+            f"{storage.get('pvc_pending')} Kubernetes PVC(s) are not Bound." if storage.get("pvc_pending", 0) > 0 else "",
+        ],
+    )
+    add_lead(
+        "Security/access state needs review",
+        [
+            "TLS certificate check failed." if security.get("tls_cert_present") is False and security.get("tls_error") else "",
+            f"TLS certificate expires in {security.get('tls_days_remaining')} day(s)." if security.get("tls_days_remaining") is not None else "",
+            "Kubernetes RBAC cannot read pods in the target namespace." if security.get("rbac_can_get_pods") is False else "",
+            "Kubernetes RBAC cannot read secrets in the target namespace." if security.get("rbac_can_get_secrets") is False else "",
+        ],
+    )
+    add_lead(
+        "Kubernetes workload state needs review",
+        [
+            f"Kubernetes reports {kubernetes.get('ready_pods')} of {kubernetes.get('pod_count')} pods ready." if kubernetes.get("pod_count") is not None else "",
+            "At least one pod is in CrashLoopBackOff." if kubernetes.get("crash_loop") else "",
+            "At least one pod has an OOMKilled termination." if kubernetes.get("oom_killed") else "",
+            f"Total pod restart count is {kubernetes.get('restart_count')}." if kubernetes.get("restart_count") is not None else "",
+        ],
+    )
+    add_lead(
+        "Cloud account/context needs review",
+        [
+            "AWS STS identity check failed." if cloud.get("aws_sts_ok") is False else "",
+            f"AWS STS identity is available for account {cloud.get('aws_account')}." if cloud.get("aws_account") else "",
+        ],
+    )
+    add_lead(
+        "DevSecOps/deployment metadata needs review",
+        [
+            f"Current git commit is {devsecops.get('git_head')}." if devsecops.get("git_head") else "",
+            f"Working tree has uncommitted changes: {devsecops.get('git_dirty')}." if devsecops.get("git_dirty") is not None else "",
+            f"Container image tag is {devsecops.get('source', {}).get('image_tag')}." if devsecops.get("source", {}).get("image_tag") else "",
+        ],
+    )
+    add_lead(
+        "Serverless runtime state needs review",
+        [
+            "Lambda function configuration check failed." if serverless.get("lambda_config_ok") is False else "",
+            f"Lambda runtime is {serverless.get('lambda_runtime')}." if serverless.get("lambda_runtime") else "",
+            f"Lambda timeout is {serverless.get('lambda_timeout')} second(s)." if serverless.get("lambda_timeout") is not None else "",
+        ],
+    )
+
+    if not leads:
+        return [
+            RootCauseScore(
+                hypothesis="No confirmed investigation lead",
+                score=0,
+                reasons=["No configured source produced enough evidence to create an investigation lead."],
+            )
+        ]
+
+    return sorted(leads, key=lambda item: item.score, reverse=True)
 
 
 def generate_report(evidence: Dict[str, Any], scores: List[RootCauseScore]) -> IncidentReport:
-    top = max(scores, key=lambda item: item.score)
     collected_evidence = build_report_evidence(evidence)
+    lead_summaries = [f"{item.hypothesis}: {'; '.join(item.reasons)}" for item in scores if item.score > 0]
 
-    if top.score == 0:
+    if not lead_summaries:
         return IncidentReport(
-            summary="The investigation completed, but no configured data source provided enough evidence to identify a root cause.",
-            root_cause="Insufficient evidence. Configure real sources before relying on a diagnosis.",
+            summary="The investigation completed, but configured sources did not provide enough evidence to form an investigation lead.",
+            root_cause="Unconfirmed. SentinelAI did not identify a root cause.",
             evidence=collected_evidence or ["No source-backed evidence was collected."],
             immediate_actions=[
                 "Configure DEPLOYMENT_PREVIOUS_CONFIG_PATH and DEPLOYMENT_CURRENT_CONFIG_PATH.",
@@ -1099,14 +1090,14 @@ def generate_report(evidence: Dict[str, Any], scores: List[RootCauseScore]) -> I
         )
 
     return IncidentReport(
-        summary="SentinelAI completed a source-backed investigation using the configured data sources.",
-        root_cause=f"Most likely root cause: {top.hypothesis} with score {top.score}.",
-        evidence=collected_evidence,
-        immediate_actions=build_immediate_actions(top, evidence),
+        summary="SentinelAI completed a source-backed investigation and found evidence-backed leads for human review.",
+        root_cause="Unconfirmed. Review the investigation leads and source evidence before declaring a root cause.",
+        evidence=collected_evidence + lead_summaries,
+        immediate_actions=build_immediate_actions(scores, evidence),
         long_term_recommendations=[
-            "Add alerts for the strongest evidence signals found in this investigation.",
-            "Add deployment validation for risky database connection-pool changes.",
-            "Keep remediation read-only until an engineer approves the recommended action.",
+            "Use the recurring investigation leads to decide which alerts or runbooks to add.",
+            "Prefer source-backed evidence and human review over fixed root-cause point rules.",
+            "Keep remediation read-only until an engineer confirms the cause and approves the action.",
         ],
     )
 
@@ -1167,44 +1158,22 @@ def build_report_evidence(evidence: Dict[str, Any]) -> List[str]:
     return items
 
 
-def build_immediate_actions(top: RootCauseScore, evidence: Dict[str, Any]) -> List[str]:
-    if top.hypothesis == "Database connection pool exhaustion":
-        return [
-            "Review the DB_POOL_SIZE deployment change before rollback or redeploy.",
-            "Restore DB_POOL_SIZE only after an engineer confirms the collected evidence.",
-            "Watch database wait events, latency, and HTTP 500 rate after the approved change.",
-        ]
-    if top.hypothesis == "Kubernetes capacity issue":
-        return [
-            "Inspect unhealthy pods and recent Kubernetes events.",
-            "Restart or scale only after an engineer approves the remediation.",
-        ]
-    if top.hypothesis == "DNS resolution issue":
-        return [
-            "Verify authoritative DNS records, TTL, and recent DNS changes.",
-            "Update records only after an engineer confirms the expected target.",
-        ]
-    if top.hypothesis == "Network issue":
-        return [
-            "Check firewall rules, security groups, load balancer target health, and route tables.",
-            "Change network policy only after human approval.",
-        ]
-    if top.hypothesis == "Storage capacity or mount issue":
-        return [
-            "Inspect disk usage, PVC binding, mount status, and volume permissions.",
-            "Expand or remount storage only after an engineer approves the action.",
-        ]
-    if top.hypothesis == "Security, certificate, or RBAC issue":
-        return [
-            "Inspect TLS certificate validity, Kubernetes RBAC, service accounts, and secrets.",
-            "Rotate credentials or modify permissions only after human approval.",
-        ]
-    if top.hypothesis == "Redis or NoSQL cache issue":
-        return [
-            "Inspect Redis availability, latency, memory, connected clients, and cache miss rate.",
-            "Flush, restart, or resize cache infrastructure only after human approval.",
-        ]
-    return [
+def build_immediate_actions(leads: List[RootCauseScore], evidence: Dict[str, Any]) -> List[str]:
+    lead_names = " ".join(lead.hypothesis.lower() for lead in leads)
+    actions = [
         "Review the collected evidence with the owning engineering team.",
-        "Do not execute remediation automatically; require human approval.",
+        "Confirm the root cause manually before rollback, restart, scaling, DNS, network, storage, or permission changes.",
     ]
+    if "deployment" in lead_names or "configuration" in lead_names:
+        actions.append("Compare the latest deployment/configuration change with the last known healthy version.")
+    if "postgresql" in lead_names or "redis" in lead_names:
+        actions.append("Ask the database/cache owner to validate connection, wait, latency, and saturation evidence.")
+    if "dns" in lead_names or "network" in lead_names:
+        actions.append("Ask the network owner to validate DNS records, routes, firewall rules, and target health.")
+    if "storage" in lead_names:
+        actions.append("Ask the platform owner to validate disk usage, PVC binding, mounts, and volume permissions.")
+    if "security" in lead_names:
+        actions.append("Ask the security/platform owner to validate TLS, RBAC, service accounts, and secrets.")
+    if "kubernetes" in lead_names:
+        actions.append("Ask the SRE/platform owner to inspect pods, events, restarts, and recent rollout state.")
+    return actions

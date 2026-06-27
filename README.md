@@ -1,14 +1,14 @@
 # SentinelAI - AI Production War Room
 
-SentinelAI is a demo incident command platform for investigating production failures with specialized AI-style agents. It coordinates deployment, metrics, logs, SQL/NoSQL databases, DNS, networking, storage, security, Kubernetes, cloud, DevSecOps, and serverless investigations, merges their evidence, scores likely root causes deterministically, and presents a human-approved remediation report.
+SentinelAI is a demo incident command platform for investigating production failures with specialized AI-style agents. It coordinates deployment, metrics, logs, SQL/NoSQL databases, DNS, networking, storage, security, Kubernetes, cloud, DevSecOps, and serverless investigations, merges their evidence, surfaces investigation leads, and presents a human-reviewed remediation report.
 
 The backend does not invent incident findings. Agents collect from configured sources. If a source is missing, the agent reports that evidence was not collected instead of returning fake data.
 
 ## What This Demo Shows
 
 - A FastAPI backend with `/health`, `/investigate`, and `/investigation/{id}` APIs
-- A LangGraph `StateGraph` workflow for planner, agent execution, evidence collection, scoring, and report generation
-- Deterministic root-cause scoring instead of LLM-only diagnosis
+- A LangGraph `StateGraph` workflow for planner, agent execution, evidence collection, lead assessment, and report generation
+- Uncertainty-first investigation leads instead of predefined root-cause point rules
 - A React + TypeScript + Tailwind dashboard with live agent status, evidence, scores, and approval controls
 - Full infrastructure sweep that launches every specialist agent for each incident
 - Source-backed collectors for deployment config files, application logs, Prometheus, PostgreSQL, Redis, DNS, TCP/UDP networking, storage, TLS/RBAC security, Kubernetes, cloud, DevSecOps, and serverless metadata
@@ -58,12 +58,12 @@ START
   -> planner
   -> agent_runner
   -> evidence_collector
-  -> root_cause_scorer
+  -> lead_assessor
   -> report_generator
   -> END
 ```
 
-The planner launches every specialist agent for a full infrastructure sweep. The agent runner executes collectors concurrently. The remaining nodes merge evidence, score root-cause hypotheses, and generate the final human-approved report.
+The planner launches every specialist agent for a full infrastructure sweep. The agent runner executes collectors concurrently. The remaining nodes merge evidence, surface source-backed investigation leads, and generate a report that stays unconfirmed until an engineer validates the cause.
 
 ## Evidence Sources
 

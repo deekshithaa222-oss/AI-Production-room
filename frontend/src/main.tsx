@@ -152,7 +152,7 @@ function App() {
           </div>
         </Panel>
 
-        <Panel title="Hypothesis Scores">
+        <Panel title="Investigation Leads">
           {investigation?.scores?.length ? (
             <div className="space-y-3">
               {investigation.scores.map((score) => (
@@ -168,7 +168,7 @@ function App() {
               ))}
             </div>
           ) : (
-            <EmptyState label="Scores appear when the evidence collector finishes." />
+            <EmptyState label="Evidence-backed leads appear when collection finishes." />
           )}
         </Panel>
       </section>
