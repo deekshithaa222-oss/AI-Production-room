@@ -10,7 +10,7 @@ The backend does not invent incident findings. Agents collect from configured so
 - A LangGraph `StateGraph` workflow for planner, agent execution, evidence collection, scoring, and report generation
 - Deterministic root-cause scoring instead of LLM-only diagnosis
 - A React + TypeScript + Tailwind dashboard with live agent status, evidence, scores, and approval controls
-- Dynamic planner that selects relevant agents from the incident description
+- Full infrastructure sweep that launches every specialist agent for each incident
 - Source-backed collectors for deployment config files, application logs, Prometheus, PostgreSQL, Redis, DNS, TCP/UDP networking, storage, TLS/RBAC security, Kubernetes, cloud, DevSecOps, and serverless metadata
 
 ## Run Locally
@@ -63,7 +63,7 @@ START
   -> END
 ```
 
-The planner chooses specialist agents from the incident description. The agent runner executes selected collectors concurrently. The remaining nodes merge evidence, score root-cause hypotheses, and generate the final human-approved report.
+The planner launches every specialist agent for a full infrastructure sweep. The agent runner executes collectors concurrently. The remaining nodes merge evidence, score root-cause hypotheses, and generate the final human-approved report.
 
 ## Evidence Sources
 
@@ -89,7 +89,6 @@ export AWS_REGION=us-east-1
 export CONTAINER_IMAGE_TAG=checkout-api:latest
 export SECURITY_SCAN_PATH=/path/to/security-scan.json
 export SERVERLESS_FUNCTION_NAME=checkout-worker
-export SENTINEL_RUN_ALL_AGENTS=1
 ```
 
 Deployment config files can be JSON or `KEY=VALUE` text. For example:
@@ -100,4 +99,4 @@ DB_POOL_SIZE=10
 
 The database agent uses the local `psql` command for read-only PostgreSQL checks. Redis uses `redis-cli`. Kubernetes, storage, and security checks use `kubectl` when available. Cloud and serverless checks use configured environment variables and optional cloud CLIs such as `aws`. If these tools or environment variables are absent, SentinelAI reports missing evidence instead of fabricating findings.
 
-By default, the planner chooses agents from the incident description. Set `SENTINEL_RUN_ALL_AGENTS=1` to run every specialist agent for a full infrastructure showcase.
+Every investigation runs the full specialist-agent set. If a source is missing, that agent reports missing evidence instead of fabricating findings.

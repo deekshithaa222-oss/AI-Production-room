@@ -739,43 +739,7 @@ def collect_serverless_evidence() -> AgentResult:
 
 
 def plan_agent_names(description: str) -> List[str]:
-    if os.getenv("SENTINEL_RUN_ALL_AGENTS") == "1":
-        return ALL_AGENT_NAMES
-
-    text = description.lower()
-    selected = ["Planner", "Deployment", "Metrics", "Logs"]
-
-    rules = [
-        ("Database", ["database", "postgres", "postgresql", "sql", "db ", "connection pool", "checkout", "timeout"]),
-        ("Redis", ["redis", "cache", "nosql", "keyspace"]),
-        ("DNS", ["dns", "domain", "hostname", "lookup", "resolve", ".com", ".net", ".org", "cannot reach"]),
-        ("Network", ["network", "tcp", "udp", "port", "firewall", "unreachable", "timeout", "connection refused"]),
-        ("Storage", ["storage", "disk", "volume", "pvc", "persistentvolume", "mount", "read-only", "iops"]),
-        ("Security", ["security", "iam", "rbac", "secret", "certificate", "cert", "tls", "permission", "access denied"]),
-        ("Kubernetes", ["kubernetes", "k8s", "pod", "container", "deployment", "crashloop", "oom", "checkout", "timeout"]),
-        ("Cloud", ["cloud", "aws", "gcp", "azure", "load balancer", "region", "iam"]),
-        ("DevSecOps", ["deploy", "deployment", "pipeline", "ci", "cd", "image", "rollback", "scan"]),
-        ("Serverless", ["lambda", "serverless", "cloud run", "function"]),
-    ]
-
-    for agent, keywords in rules:
-        if any(keyword in text for keyword in keywords):
-            selected.append(agent)
-
-    for env_name, agent in [
-        ("REDIS_URL", "Redis"),
-        ("DNS_HOST", "DNS"),
-        ("NETWORK_TARGET_HOST", "Network"),
-        ("STORAGE_PATH", "Storage"),
-        ("TLS_HOST", "Security"),
-        ("DATABASE_URL", "Database"),
-        ("PROMETHEUS_URL", "Metrics"),
-        ("SERVERLESS_FUNCTION_NAME", "Serverless"),
-    ]:
-        if os.getenv(env_name):
-            selected.append(agent)
-
-    return dedupe([name for name in selected if name in ALL_AGENT_NAMES])
+    return ALL_AGENT_NAMES
 
 
 AGENT_RUNNERS = {
