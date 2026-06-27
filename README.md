@@ -7,7 +7,7 @@ The backend does not invent incident findings. Agents collect from configured so
 ## What This Demo Shows
 
 - A FastAPI backend with `/health`, `/investigate`, and `/investigation/{id}` APIs
-- A LangGraph-style parallel investigation workflow
+- A LangGraph `StateGraph` workflow for planner, agent execution, evidence collection, scoring, and report generation
 - Deterministic root-cause scoring instead of LLM-only diagnosis
 - A React + TypeScript + Tailwind dashboard with live agent status, evidence, scores, and approval controls
 - Dynamic planner that selects relevant agents from the incident description
@@ -48,6 +48,22 @@ curl -X POST http://localhost:8000/investigate \
   -H "Content-Type: application/json" \
   -d '{"description":"Checkout API is timing out and returning HTTP 500 errors."}'
 ```
+
+## LangGraph Flow
+
+The backend uses LangGraph to run the investigation workflow:
+
+```text
+START
+  -> planner
+  -> agent_runner
+  -> evidence_collector
+  -> root_cause_scorer
+  -> report_generator
+  -> END
+```
+
+The planner chooses specialist agents from the incident description. The agent runner executes selected collectors concurrently. The remaining nodes merge evidence, score root-cause hypotheses, and generate the final human-approved report.
 
 ## Evidence Sources
 

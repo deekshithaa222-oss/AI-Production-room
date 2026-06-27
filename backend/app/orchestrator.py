@@ -7,9 +7,11 @@ import socket
 import subprocess
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, TypedDict
 from urllib.parse import urlencode, urlparse
 from urllib.request import urlopen
+
+from langgraph.graph import END, START, StateGraph
 
 from .models import (
     AgentResult,
@@ -38,6 +40,17 @@ ALL_AGENT_NAMES = [
     "Serverless",
 ]
 investigations: Dict[str, Investigation] = {}
+compiled_graph = None
+
+
+class InvestigationGraphState(TypedDict, total=False):
+    investigation_id: str
+    description: str
+    planned_agents: List[str]
+    agent_results: List[AgentResult]
+    evidence: Dict[str, Any]
+    scores: List[RootCauseScore]
+    report: IncidentReport
 
 
 def create_investigation(description: str) -> Investigation:
@@ -55,6 +68,41 @@ def create_investigation(description: str) -> Investigation:
 
 
 async def run_investigation(investigation_id: str) -> None:
+    graph = get_investigation_graph()
+    await graph.ainvoke(
+        {
+            "investigation_id": investigation_id,
+            "description": investigations[investigation_id].description,
+        }
+    )
+
+
+def get_investigation_graph():
+    global compiled_graph
+    if compiled_graph is not None:
+        return compiled_graph
+
+    graph = StateGraph(InvestigationGraphState)
+    graph.add_node("planner", planner_node)
+    graph.add_node("agent_runner", agent_runner_node)
+    graph.add_node("evidence_collector", evidence_collector_node)
+    graph.add_node("root_cause_scorer", root_cause_scorer_node)
+    graph.add_node("report_generator", report_generator_node)
+
+    graph.add_edge(START, "planner")
+    graph.add_edge("planner", "agent_runner")
+    graph.add_edge("agent_runner", "evidence_collector")
+    graph.add_edge("evidence_collector", "root_cause_scorer")
+    graph.add_edge("root_cause_scorer", "report_generator")
+    graph.add_edge("report_generator", END)
+
+    compiled_graph = graph.compile()
+    return compiled_graph
+
+
+async def planner_node(state: InvestigationGraphState) -> InvestigationGraphState:
+    investigation_id = state["investigation_id"]
+    description = state["description"]
     investigation = investigations[investigation_id]
     planned_agents = [agent.name for agent in investigation.agents if agent.name != "Planner"]
     investigation.status = InvestigationState.running
@@ -79,17 +127,41 @@ async def run_investigation(investigation_id: str) -> None:
         evidence={"plan": [name.lower() for name in planned_agents]},
     )
     investigation.progress = 18
+    return {"planned_agents": planned_agents}
 
+
+async def agent_runner_node(state: InvestigationGraphState) -> InvestigationGraphState:
+    investigation_id = state["investigation_id"]
+    planned_agents = state["planned_agents"]
     results = await asyncio.gather(*(AGENT_RUNNERS[name](investigation_id) for name in planned_agents))
 
+    investigation = investigations[investigation_id]
     for result in results:
         set_agent_result(investigation, result)
 
+    return {"agent_results": results}
+
+
+def evidence_collector_node(state: InvestigationGraphState) -> InvestigationGraphState:
+    investigation = investigations[state["investigation_id"]]
     investigation.evidence = collect_evidence(investigation.agents)
+    investigation.progress = 82
+    return {"evidence": investigation.evidence}
+
+
+def root_cause_scorer_node(state: InvestigationGraphState) -> InvestigationGraphState:
+    investigation = investigations[state["investigation_id"]]
     investigation.scores = score_root_causes(investigation.evidence)
+    investigation.progress = 92
+    return {"scores": investigation.scores}
+
+
+def report_generator_node(state: InvestigationGraphState) -> InvestigationGraphState:
+    investigation = investigations[state["investigation_id"]]
     investigation.report = generate_report(investigation.evidence, investigation.scores)
     investigation.status = InvestigationState.complete
     investigation.progress = 100
+    return {"report": investigation.report}
 
 
 async def deployment_agent(investigation_id: str) -> AgentResult:
