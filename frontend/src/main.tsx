@@ -1,6 +1,26 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
-import { AlertTriangle, Check, CircleDot, Database, GitBranch, Gauge, Play, Server, ShieldCheck, Terminal, X } from "lucide-react";
+import {
+  AlertTriangle,
+  Boxes,
+  Check,
+  CircleDot,
+  Cloud,
+  Database,
+  GitBranch,
+  Globe,
+  Gauge,
+  HardDrive,
+  LockKeyhole,
+  Network,
+  Play,
+  Server,
+  ShieldCheck,
+  Terminal,
+  Workflow,
+  X,
+  Zap,
+} from "lucide-react";
 import "./styles.css";
 
 type AgentStatus = "pending" | "running" | "complete";
@@ -48,7 +68,15 @@ const iconMap: Record<string, React.ElementType> = {
   Metrics: Gauge,
   Logs: Terminal,
   Database: Database,
+  Redis: Boxes,
+  DNS: Globe,
+  Network: Network,
+  Storage: HardDrive,
+  Security: LockKeyhole,
   Kubernetes: Server,
+  Cloud: Cloud,
+  DevSecOps: Workflow,
+  Serverless: Zap,
 };
 
 function App() {
@@ -246,7 +274,7 @@ function EmptyState({ label }: { label: string }) {
 }
 
 function defaultAgents(): Agent[] {
-  return ["Planner", "Deployment", "Metrics", "Logs", "Database", "Kubernetes"].map((name) => ({
+  return ["Planner", "Deployment", "Metrics", "Logs", "Database", "Redis", "DNS", "Network", "Storage", "Security", "Kubernetes", "Cloud", "DevSecOps", "Serverless"].map((name) => ({
     name,
     status: "pending",
     summary: "",
@@ -259,4 +287,3 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
     <App />
   </React.StrictMode>,
 );
-

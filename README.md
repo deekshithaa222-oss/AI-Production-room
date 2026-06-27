@@ -1,6 +1,6 @@
 # SentinelAI - AI Production War Room
 
-SentinelAI is a demo incident command platform for investigating production failures with specialized AI-style agents. It coordinates deployment, metrics, logs, database, and Kubernetes investigations, merges their evidence, scores likely root causes deterministically, and presents a human-approved remediation report.
+SentinelAI is a demo incident command platform for investigating production failures with specialized AI-style agents. It coordinates deployment, metrics, logs, SQL/NoSQL databases, DNS, networking, storage, security, Kubernetes, cloud, DevSecOps, and serverless investigations, merges their evidence, scores likely root causes deterministically, and presents a human-approved remediation report.
 
 The backend does not invent incident findings. Agents collect from configured sources. If a source is missing, the agent reports that evidence was not collected instead of returning fake data.
 
@@ -10,7 +10,8 @@ The backend does not invent incident findings. Agents collect from configured so
 - A LangGraph-style parallel investigation workflow
 - Deterministic root-cause scoring instead of LLM-only diagnosis
 - A React + TypeScript + Tailwind dashboard with live agent status, evidence, scores, and approval controls
-- Source-backed collectors for deployment config files, application logs, Prometheus, PostgreSQL, and Kubernetes
+- Dynamic planner that selects relevant agents from the incident description
+- Source-backed collectors for deployment config files, application logs, Prometheus, PostgreSQL, Redis, DNS, TCP/UDP networking, storage, TLS/RBAC security, Kubernetes, cloud, DevSecOps, and serverless metadata
 
 ## Run Locally
 
@@ -57,9 +58,22 @@ export DEPLOYMENT_PREVIOUS_CONFIG_PATH=/path/to/previous.env
 export DEPLOYMENT_CURRENT_CONFIG_PATH=/path/to/current.env
 export APP_LOG_PATH=/path/to/application.log
 export DATABASE_URL=postgresql://user:password@localhost:5432/app
+export REDIS_URL=redis://localhost:6379
 export PROMETHEUS_URL=http://localhost:9090
+export DNS_HOST=checkout.example.com
+export NETWORK_TARGET_HOST=postgres.internal
+export NETWORK_TARGET_PORT=5432
+export NETWORK_UDP_HOST=8.8.8.8
+export NETWORK_UDP_PORT=53
+export STORAGE_PATH=/var/lib/app
+export TLS_HOST=checkout.example.com
 export KUBE_NAMESPACE=default
 export KUBE_SELECTOR=app=checkout-api
+export AWS_REGION=us-east-1
+export CONTAINER_IMAGE_TAG=checkout-api:latest
+export SECURITY_SCAN_PATH=/path/to/security-scan.json
+export SERVERLESS_FUNCTION_NAME=checkout-worker
+export SENTINEL_RUN_ALL_AGENTS=1
 ```
 
 Deployment config files can be JSON or `KEY=VALUE` text. For example:
@@ -68,4 +82,6 @@ Deployment config files can be JSON or `KEY=VALUE` text. For example:
 DB_POOL_SIZE=10
 ```
 
-The database agent uses the local `psql` command for read-only PostgreSQL checks. The Kubernetes agent uses the local `kubectl` command. If these tools or environment variables are absent, SentinelAI reports missing evidence instead of fabricating findings.
+The database agent uses the local `psql` command for read-only PostgreSQL checks. Redis uses `redis-cli`. Kubernetes, storage, and security checks use `kubectl` when available. Cloud and serverless checks use configured environment variables and optional cloud CLIs such as `aws`. If these tools or environment variables are absent, SentinelAI reports missing evidence instead of fabricating findings.
+
+By default, the planner chooses agents from the incident description. Set `SENTINEL_RUN_ALL_AGENTS=1` to run every specialist agent for a full infrastructure showcase.
