@@ -5,7 +5,7 @@ from .models import Investigation, InvestigationRequest
 from .orchestrator import create_investigation, investigations
 
 
-app = FastAPI(title="SentinelAI Incident Command API", version="0.1.0")
+app = FastAPI(title="SentinelAI Infrastructure Incident Command API", version="0.1.0")
 
 app.add_middleware(
     CORSMiddleware,

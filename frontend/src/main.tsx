@@ -60,7 +60,7 @@ type Investigation = {
 
 const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:8000";
 
-const starterDescription = "Checkout API is timing out and returning HTTP 500 errors.";
+const starterDescription = "Production ingress latency increased after a Kubernetes deployment; database port 5432 intermittently times out.";
 
 const iconMap: Record<string, React.ElementType> = {
   Planner: CircleDot,
@@ -123,7 +123,7 @@ function App() {
             </div>
             <div>
               <h1 className="text-xl font-semibold tracking-normal">SentinelAI</h1>
-              <p className="text-sm text-slate-600">AI Production War Room</p>
+              <p className="text-sm text-slate-600">AI Infrastructure War Room</p>
             </div>
           </div>
           <div className="flex items-center gap-3 text-sm">
@@ -159,7 +159,7 @@ function App() {
                 <div key={score.hypothesis}>
                   <div className="mb-1 flex items-center justify-between gap-3 text-sm">
                     <span className="font-medium">{score.hypothesis}</span>
-                    <span className="tabular-nums text-slate-600">{score.score}</span>
+                    <span className="tabular-nums text-slate-600">{score.score} signals</span>
                   </div>
                   <div className="h-2 rounded bg-slate-200">
                     <div className="h-2 rounded bg-signal" style={{ width: `${Math.min(score.score, 100)}%` }} />

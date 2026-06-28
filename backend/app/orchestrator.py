@@ -175,7 +175,7 @@ async def metrics_agent(investigation_id: str) -> AgentResult:
 
 
 async def logs_agent(investigation_id: str) -> AgentResult:
-    mark_running(investigation_id, "Logs", "Reading application logs from file or kubectl.")
+    mark_running(investigation_id, "Logs", "Reading service and workload logs from file or kubectl.")
     return await asyncio.to_thread(collect_log_evidence)
 
 
@@ -261,8 +261,9 @@ def collect_deployment_evidence() -> AgentResult:
             evidence,
         )
 
-    before = parse_int(previous.get("DB_POOL_SIZE"))
-    after = parse_int(current.get("DB_POOL_SIZE"))
+    pool_key = "DATABASE_POOL_SIZE" if "DATABASE_POOL_SIZE" in previous or "DATABASE_POOL_SIZE" in current else "DB_POOL_SIZE"
+    before = parse_int(previous.get(pool_key))
+    after = parse_int(current.get(pool_key))
     evidence.update(
         {
             "db_pool_size_before": before,
@@ -272,10 +273,12 @@ def collect_deployment_evidence() -> AgentResult:
         }
     )
 
+    evidence["database_pool_key"] = pool_key
+
     if evidence["db_pool_size_changed"]:
-        findings.append(f"DB_POOL_SIZE changed from {before} to {after}.")
+        findings.append(f"{pool_key} changed from {before} to {after}.")
     else:
-        findings.append("No DB_POOL_SIZE change was found in the configured deployment files.")
+        findings.append("No database pool-size change was found in the configured deployment files.")
 
     return AgentResult(
         name="Deployment",
@@ -327,7 +330,7 @@ def collect_metrics_evidence() -> AgentResult:
 def collect_log_evidence() -> AgentResult:
     log_path = os.getenv("APP_LOG_PATH")
     namespace = os.getenv("KUBE_NAMESPACE", "default")
-    selector = os.getenv("KUBE_SELECTOR", "app=checkout-api")
+    selector = os.getenv("KUBE_SELECTOR", "app=target-service")
     evidence: Dict[str, Any] = {"source": {"app_log_path": log_path, "namespace": namespace, "selector": selector}}
 
     logs: Optional[str] = None
@@ -348,7 +351,7 @@ def collect_log_evidence() -> AgentResult:
     if logs is None:
         return unavailable_agent(
             "Logs",
-            "Application log evidence was not collected.",
+            "Service log evidence was not collected.",
             "Set APP_LOG_PATH or configure kubectl access to read pod logs.",
             evidence,
         )
@@ -370,7 +373,7 @@ def collect_log_evidence() -> AgentResult:
         f"Found {timeout_matches} connection-timeout log matches.",
         f"Found {stack_traces} error or stack-trace markers.",
     ]
-    return AgentResult(name="Logs", status=AgentState.complete, summary="Application log evidence collected.", findings=findings, evidence=evidence)
+    return AgentResult(name="Logs", status=AgentState.complete, summary="Service log evidence collected.", findings=findings, evidence=evidence)
 
 
 def collect_database_evidence() -> AgentResult:
@@ -396,7 +399,8 @@ def collect_database_evidence() -> AgentResult:
     waiting = psql_scalar(database_url, "select count(*) from pg_stat_activity where wait_event is not null;")
     deadlocks = psql_scalar(database_url, "select coalesce(sum(deadlocks), 0) from pg_stat_database;")
     current_config = read_config_file(os.getenv("DEPLOYMENT_CURRENT_CONFIG_PATH"))
-    pool_size = parse_int((current_config or {}).get("DB_POOL_SIZE"))
+    current_config = current_config or {}
+    pool_size = parse_int(current_config.get("DATABASE_POOL_SIZE") or current_config.get("DB_POOL_SIZE"))
     pool_saturation_pct = None
     if active is not None and pool_size and pool_size > 0:
         pool_saturation_pct = round((active / pool_size) * 100, 2)
@@ -419,7 +423,7 @@ def collect_database_evidence() -> AgentResult:
     if deadlocks is not None:
         findings.append(f"Total database deadlocks: {deadlocks}.")
     if pool_saturation_pct is not None:
-        findings.append(f"Estimated pool saturation from active connections and DB_POOL_SIZE: {pool_saturation_pct}%.")
+        findings.append(f"Estimated pool saturation from active connections and configured pool size: {pool_saturation_pct}%.")
 
     return AgentResult(
         name="Database",
@@ -432,7 +436,7 @@ def collect_database_evidence() -> AgentResult:
 
 def collect_kubernetes_evidence() -> AgentResult:
     namespace = os.getenv("KUBE_NAMESPACE", "default")
-    selector = os.getenv("KUBE_SELECTOR", "app=checkout-api")
+    selector = os.getenv("KUBE_SELECTOR", "app=target-service")
     evidence: Dict[str, Any] = {"source": {"namespace": namespace, "selector": selector}}
     if not shutil.which("kubectl"):
         return unavailable_agent(
@@ -952,14 +956,14 @@ def score_root_causes(evidence: Dict[str, Any]) -> List[RootCauseScore]:
     add_lead(
         "Deployment/configuration change needs review",
         [
-            f"DB_POOL_SIZE changed from {deployment.get('db_pool_size_before')} to {deployment.get('db_pool_size_after')}."
+            f"{deployment.get('database_pool_key', 'DATABASE_POOL_SIZE')} changed from {deployment.get('db_pool_size_before')} to {deployment.get('db_pool_size_after')}."
             if deployment.get("db_pool_size_changed")
             else "",
-            "DB_POOL_SIZE decreased in the configured deployment files." if deployment.get("db_pool_size_decreased") else "",
+            "Database pool size decreased in the configured deployment files." if deployment.get("db_pool_size_decreased") else "",
         ],
     )
     add_lead(
-        "Application logs need review",
+        "Service logs need review",
         [
             f"Logs contain {logs.get('connection_timeout_count', 0)} connection-timeout matches." if logs.get("connection_timeout_logs") else "",
             f"Logs contain {logs.get('error_count', 0)} error or stack-trace markers." if logs.get("stack_trace_present") else "",
@@ -1090,7 +1094,7 @@ def generate_report(evidence: Dict[str, Any], scores: List[RootCauseScore]) -> I
         )
 
     return IncidentReport(
-        summary="SentinelAI completed a source-backed investigation and found evidence-backed leads for human review.",
+        summary="SentinelAI completed a source-backed infrastructure investigation and found evidence-backed leads for human review.",
         root_cause="Unconfirmed. Review the investigation leads and source evidence before declaring a root cause.",
         evidence=collected_evidence + lead_summaries,
         immediate_actions=build_immediate_actions(scores, evidence),
@@ -1119,7 +1123,7 @@ def build_report_evidence(evidence: Dict[str, Any]) -> List[str]:
     serverless = evidence.get("serverless", {})
 
     if deployment.get("db_pool_size_changed"):
-        items.append(f"Deployment config shows DB_POOL_SIZE changed from {deployment.get('db_pool_size_before')} to {deployment.get('db_pool_size_after')}.")
+        items.append(f"Deployment config shows {deployment.get('database_pool_key', 'DATABASE_POOL_SIZE')} changed from {deployment.get('db_pool_size_before')} to {deployment.get('db_pool_size_after')}.")
     if database.get("pool_saturation_pct") is not None:
         items.append(f"PostgreSQL diagnostics estimate pool saturation at {database.get('pool_saturation_pct')}%.")
     if database.get("waiting_queries") is not None:
@@ -1142,7 +1146,7 @@ def build_report_evidence(evidence: Dict[str, Any]) -> List[str]:
     if security.get("rbac_can_get_pods") is not None:
         items.append(f"Kubernetes RBAC can get pods: {security.get('rbac_can_get_pods')}.")
     if logs.get("connection_timeout_logs"):
-        items.append(f"Application logs contain {logs.get('connection_timeout_count')} connection-timeout matches.")
+        items.append(f"Service logs contain {logs.get('connection_timeout_count')} connection-timeout matches.")
     if metrics.get("p95_latency_ms") is not None:
         items.append(f"Prometheus p95 latency query returned {round(metrics.get('p95_latency_ms'), 2)} ms.")
     if metrics.get("error_rate_pct") is not None:
