@@ -6,6 +6,7 @@ import {
   Check,
   CircleDot,
   Cloud,
+  CreditCard,
   Database,
   GitBranch,
   Globe,
@@ -68,6 +69,7 @@ const iconMap: Record<string, React.ElementType> = {
   Metrics: Gauge,
   Logs: Terminal,
   Database: Database,
+  Payment: CreditCard,
   Redis: Boxes,
   DNS: Globe,
   Network: Network,
@@ -274,7 +276,7 @@ function EmptyState({ label }: { label: string }) {
 }
 
 function defaultAgents(): Agent[] {
-  return ["Planner", "Deployment", "Metrics", "Logs", "Database", "Redis", "DNS", "Network", "Storage", "Security", "Kubernetes", "Cloud", "DevSecOps", "Serverless"].map((name) => ({
+  return ["Planner", "Deployment", "Metrics", "Logs", "Database", "Payment", "Redis", "DNS", "Network", "Storage", "Security", "Kubernetes", "Cloud", "DevSecOps", "Serverless"].map((name) => ({
     name,
     status: "pending",
     summary: "",

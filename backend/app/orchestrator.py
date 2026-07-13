@@ -29,6 +29,7 @@ ALL_AGENT_NAMES = [
     "Metrics",
     "Logs",
     "Database",
+    "Payment",
     "Redis",
     "DNS",
     "Network",
@@ -182,6 +183,11 @@ async def logs_agent(investigation_id: str) -> AgentResult:
 async def database_agent(investigation_id: str) -> AgentResult:
     mark_running(investigation_id, "Database", "Running read-only PostgreSQL diagnostics when configured.")
     return await asyncio.to_thread(collect_database_evidence)
+
+
+async def payment_agent(investigation_id: str) -> AgentResult:
+    mark_running(investigation_id, "Payment", "Checking payment service health, latency, and timeout evidence.")
+    return await asyncio.to_thread(collect_payment_evidence)
 
 
 async def kubernetes_agent(investigation_id: str) -> AgentResult:
@@ -432,6 +438,72 @@ def collect_database_evidence() -> AgentResult:
         findings=findings or ["psql ran, but no numeric diagnostics were collected."],
         evidence=evidence,
     )
+
+
+def collect_payment_evidence() -> AgentResult:
+    health_url = os.getenv("PAYMENT_HEALTH_URL")
+    log_path = os.getenv("PAYMENT_LOG_PATH")
+    latency_threshold_ms = parse_float(os.getenv("PAYMENT_LATENCY_THRESHOLD_MS")) or 1000
+    evidence: Dict[str, Any] = {
+        "source": {
+            "payment_health_url": health_url,
+            "payment_log_path": log_path,
+            "latency_threshold_ms": latency_threshold_ms,
+        }
+    }
+    findings: List[str] = []
+
+    if health_url:
+        from time import perf_counter
+
+        started = perf_counter()
+        try:
+            with urlopen(health_url, timeout=5) as response:
+                response.read()
+                status_code = response.status
+            latency_ms = round((perf_counter() - started) * 1000, 2)
+            evidence.update(
+                {
+                    "health_check_ok": 200 <= status_code < 400,
+                    "health_status_code": status_code,
+                    "health_latency_ms": latency_ms,
+                    "latency_above_threshold": latency_ms >= latency_threshold_ms,
+                }
+            )
+            findings.append(f"Payment health endpoint returned HTTP {status_code} in {latency_ms} ms.")
+        except Exception as exc:
+            evidence.update({"health_check_ok": False, "health_error": str(exc), "latency_above_threshold": True})
+            findings.append(f"Payment health endpoint failed: {exc}.")
+
+    if log_path:
+        path = Path(log_path)
+        if path.exists():
+            logs = path.read_text(errors="replace")
+            timeout_count = count_matches(logs, [r"payment.*timeout", r"timeout.*payment", r"gateway.*timeout", r"5\d\d"])
+            declined_count = count_matches(logs, [r"declined", r"insufficient funds", r"card error"])
+            evidence.update(
+                {
+                    "lines_scanned": len(logs.splitlines()),
+                    "payment_timeout_count": timeout_count,
+                    "payment_timeouts": timeout_count > 0,
+                    "payment_decline_count": declined_count,
+                }
+            )
+            findings.append(f"Scanned {evidence['lines_scanned']} payment log lines.")
+            findings.append(f"Found {timeout_count} payment timeout or gateway-error matches.")
+        else:
+            evidence["log_file_missing"] = True
+            findings.append(f"PAYMENT_LOG_PATH does not exist: {log_path}.")
+
+    if not findings:
+        return unavailable_agent(
+            "Payment",
+            "Payment service evidence was not collected.",
+            "Set PAYMENT_HEALTH_URL or PAYMENT_LOG_PATH to validate checkout/payment service behavior.",
+            evidence,
+        )
+
+    return AgentResult(name="Payment", status=AgentState.complete, summary="Payment service evidence collected.", findings=findings, evidence=evidence)
 
 
 def collect_kubernetes_evidence() -> AgentResult:
@@ -743,7 +815,50 @@ def collect_serverless_evidence() -> AgentResult:
 
 
 def plan_agent_names(description: str) -> List[str]:
-    return ALL_AGENT_NAMES
+    text = description.lower()
+    selected = ["Planner", "Logs", "Metrics"]
+
+    keyword_map = {
+        "Deployment": ["deploy", "release", "rollback", "config", "change"],
+        "Database": ["database", "postgres", "postgresql", "sql", "db ", "5432", "query", "connection pool"],
+        "Payment": ["payment", "checkout", "card", "stripe", "gateway", "purchase", "order"],
+        "Redis": ["redis", "cache", "session"],
+        "DNS": ["dns", "hostname", "domain", "resolve"],
+        "Network": ["network", "tcp", "udp", "port", "connection", "timeout", "firewall", "route"],
+        "Storage": ["storage", "disk", "volume", "pvc", "mount"],
+        "Security": ["security", "tls", "certificate", "rbac", "secret", "permission", "auth"],
+        "Kubernetes": ["kubernetes", "k8s", "pod", "container", "restart", "crashloop", "oom"],
+        "Cloud": ["aws", "gcp", "azure", "cloud", "region", "account"],
+        "DevSecOps": ["ci", "cd", "pipeline", "git", "image", "container image", "scan"],
+        "Serverless": ["lambda", "serverless", "cloud run", "function"],
+    }
+
+    configured_sources = {
+        "Deployment": ["DEPLOYMENT_PREVIOUS_CONFIG_PATH", "DEPLOYMENT_CURRENT_CONFIG_PATH"],
+        "Database": ["DATABASE_URL"],
+        "Payment": ["PAYMENT_HEALTH_URL", "PAYMENT_LOG_PATH"],
+        "Redis": ["REDIS_URL"],
+        "DNS": ["DNS_HOST"],
+        "Network": ["NETWORK_TARGET_HOST", "NETWORK_TARGET_PORT", "NETWORK_UDP_HOST", "NETWORK_UDP_PORT"],
+        "Storage": ["STORAGE_PATH"],
+        "Security": ["TLS_HOST"],
+        "Kubernetes": ["KUBE_NAMESPACE", "KUBE_SELECTOR"],
+        "Cloud": ["AWS_REGION", "AWS_DEFAULT_REGION", "GOOGLE_CLOUD_PROJECT", "AZURE_CLIENT_ID"],
+        "DevSecOps": ["GITHUB_RUN_ID", "CONTAINER_IMAGE_TAG", "CONTAINER_IMAGE_DIGEST", "SECURITY_SCAN_PATH"],
+        "Serverless": ["SERVERLESS_FUNCTION_NAME", "AWS_LAMBDA_FUNCTION_NAME", "AWS_EXECUTION_ENV", "K_SERVICE"],
+    }
+
+    for agent, keywords in keyword_map.items():
+        if any(keyword in text for keyword in keywords) or any(os.getenv(name) for name in configured_sources.get(agent, [])):
+            selected.append(agent)
+
+    if any(term in text for term in ["slow", "latency", "outage", "down", "error", "timeout"]):
+        selected.extend(["Database", "Network", "Kubernetes"])
+
+    if any(term in text for term in ["production", "sev", "incident", "customer"]):
+        selected.extend(["Deployment", "DevSecOps", "Cloud"])
+
+    return [name for name in ALL_AGENT_NAMES if name in selected]
 
 
 AGENT_RUNNERS = {
@@ -751,6 +866,7 @@ AGENT_RUNNERS = {
     "Metrics": metrics_agent,
     "Logs": logs_agent,
     "Database": database_agent,
+    "Payment": payment_agent,
     "Redis": redis_agent,
     "DNS": dns_agent,
     "Network": network_agent,
@@ -943,6 +1059,7 @@ def score_root_causes(evidence: Dict[str, Any]) -> List[RootCauseScore]:
     metrics = evidence.get("metrics", {})
     logs = evidence.get("logs", {})
     database = evidence.get("database", {})
+    payment = evidence.get("payment", {})
     redis = evidence.get("redis", {})
     dns = evidence.get("dns", {})
     network = evidence.get("network", {})
@@ -984,6 +1101,16 @@ def score_root_causes(evidence: Dict[str, Any]) -> List[RootCauseScore]:
             f"Sessions with wait events: {database.get('waiting_queries')}." if database.get("waiting_queries") is not None else "",
             f"Estimated pool saturation: {database.get('pool_saturation_pct')}%." if database.get("pool_saturation_pct") is not None else "",
             f"Total database deadlocks: {database.get('deadlocks')}." if database.get("deadlocks") is not None else "",
+        ],
+    )
+    add_lead(
+        "Payment service needs review",
+        [
+            "Payment health endpoint failed." if payment.get("health_check_ok") is False else "",
+            f"Payment health latency was {payment.get('health_latency_ms')} ms." if payment.get("health_latency_ms") is not None else "",
+            f"Payment logs contain {payment.get('payment_timeout_count')} timeout or gateway-error matches." if payment.get("payment_timeouts") else "",
+            "Payment timeout evidence can explain checkout queuing and downstream app/database symptoms." if payment.get("payment_timeouts") or payment.get("latency_above_threshold") else "",
+            "Validate the payment service before declaring app or database symptoms as the root cause." if payment.get("payment_timeouts") or payment.get("latency_above_threshold") else "",
         ],
     )
     add_lead(
@@ -1110,6 +1237,7 @@ def build_report_evidence(evidence: Dict[str, Any]) -> List[str]:
     items: List[str] = []
     deployment = evidence.get("deployment", {})
     database = evidence.get("database", {})
+    payment = evidence.get("payment", {})
     redis = evidence.get("redis", {})
     dns = evidence.get("dns", {})
     network = evidence.get("network", {})
@@ -1128,6 +1256,12 @@ def build_report_evidence(evidence: Dict[str, Any]) -> List[str]:
         items.append(f"PostgreSQL diagnostics estimate pool saturation at {database.get('pool_saturation_pct')}%.")
     if database.get("waiting_queries") is not None:
         items.append(f"PostgreSQL reports {database.get('waiting_queries')} sessions with wait events.")
+    if payment.get("health_check_ok") is not None:
+        items.append(f"Payment health endpoint {'succeeded' if payment.get('health_check_ok') else 'failed'}.")
+    if payment.get("health_latency_ms") is not None:
+        items.append(f"Payment health latency was {payment.get('health_latency_ms')} ms.")
+    if payment.get("payment_timeouts"):
+        items.append(f"Payment logs contain {payment.get('payment_timeout_count')} timeout or gateway-error matches.")
     if redis.get("ping_ok") is not None:
         items.append(f"Redis PING status: {'ok' if redis.get('ping_ok') else 'failed'}.")
     if redis.get("cache_miss_rate_pct") is not None:
@@ -1172,6 +1306,8 @@ def build_immediate_actions(leads: List[RootCauseScore], evidence: Dict[str, Any
         actions.append("Compare the latest deployment/configuration change with the last known healthy version.")
     if "postgresql" in lead_names or "redis" in lead_names:
         actions.append("Ask the database/cache owner to validate connection, wait, latency, and saturation evidence.")
+    if "payment" in lead_names:
+        actions.append("Ask the payments owner to validate gateway health, upstream latency, and checkout timeout evidence.")
     if "dns" in lead_names or "network" in lead_names:
         actions.append("Ask the network owner to validate DNS records, routes, firewall rules, and target health.")
     if "storage" in lead_names:
