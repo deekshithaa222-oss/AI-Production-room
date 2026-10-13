@@ -1,0 +1,8 @@
+fastapi>=0.116
+uvicorn[standard]>=0.35
+pydantic>=2.11
+prometheus-client>=0.20
+opentelemetry-api>=1.28
+opentelemetry-sdk>=1.28
+redis>=5.0
+pytest>=8.0
